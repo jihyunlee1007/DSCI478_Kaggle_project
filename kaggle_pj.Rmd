@@ -1,0 +1,226 @@
+---
+title: "kaggle"
+author: "Hannah Kim"
+date: "2024-02-21"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+# package imports
+library(caret)
+library(tidymodels)
+library(dplyr)
+library(ggplot2)
+library(pROC)
+library(glmnet)
+```
+
+```{r}
+train <- read.csv("~/Downloads/house-prices-advanced-regression-techniques/train.csv")
+test <- read.csv("~/Downloads/house-prices-advanced-regression-techniques/test.csv")
+```
+
+```{r}
+set.seed(1)
+# check numerical variable
+#dplyr::select_if(train, is.numeric)
+
+# Alley has 1369 NA's, PoolQC has 1453 NA's, Fence has 1179 NA's, MiscFeature has 1406 NA's
+#dplyr::select_if(train, is.character) 
+
+# Fill NA value in categorical column with mode value
+#training data
+cleaned_train <- train %>% dplyr::select(-Alley, -PoolQC, -Fence, -MiscFeature)
+
+categorical_col <- sapply(cleaned_train, is.character)
+categorical_colnames <- names(cleaned_train)[categorical_col]
+for (col in categorical_colnames) {
+  mode_value <- names(sort(table(cleaned_train[[col]]), decreasing = TRUE))[1]
+  cleaned_train[[col]][is.na(cleaned_train[[col]])] <- mode_value
+}
+
+# test data 
+cleaned_test <- test %>% dplyr::select(-Alley, -PoolQC, -Fence, -MiscFeature)
+
+categorical_col_t <- sapply(cleaned_test, is.character)
+categorical_colnames_t <- names(cleaned_test)[categorical_col_t]
+for (col in categorical_colnames_t) {
+  mode_value <- names(sort(table(cleaned_test[[col]]), decreasing = TRUE))[1]
+  cleaned_test[[col]][is.na(cleaned_test[[col]])] <- mode_value
+}
+
+train_x<- data.matrix(data.frame(cleaned_train %>% dplyr::select(-SalePrice) , stringsAsFactors = FALSE))
+
+# Fill NA value in numerical column with mean value
+combined_data <- rbind(train_x, cleaned_test)
+numerical_columns <- sapply(combined_data, is.numeric)
+numerical_column_names <- names(combined_data)[numerical_columns]
+
+column_means <- colMeans(combined_data[, numerical_column_names], na.rm = TRUE)
+
+for (col in numerical_column_names) {
+  cleaned_train[[col]][is.na(cleaned_train[[col]])] <- column_means[col]
+  cleaned_test[[col]][is.na(cleaned_test[[col]])] <- column_means[col]
+}
+```
+
+```{r}
+set.seed(1)
+dt <- sort(sample(nrow(cleaned_train), nrow(cleaned_train)*.8))
+cleaned_train <- cleaned_train[dt,]
+
+train_x<- data.frame(cleaned_train %>% dplyr::select(-SalePrice) , stringsAsFactors = FALSE)
+
+train_y<- data.frame(cleaned_train %>% dplyr::select(SalePrice) , stringsAsFactors = FALSE)
+
+cleaned_test1<-cleaned_train[-dt,]
+
+test_x<- data.frame(cleaned_test1 %>% dplyr::select(-SalePrice) , stringsAsFactors = FALSE)
+
+test_y<- data.frame(cleaned_test1 %>% dplyr::select(SalePrice) , stringsAsFactors = FALSE)
+```
+
+#feature engineering
+```{r}
+set.seed(1)
+train_x$TotalArea <- train_x$X1stFlrSF + train_x$X2ndFlrSF + train_x$TotalBsmtSF
+train_x$Age <- train_x$YrSold - train_x$YearBuilt
+train_x$TotalBathrooms <- train_x$BsmtFullBath + (0.5 * train_x$BsmtHalfBath) + train_x$FullBath + (0.5 * train_x$HalfBath)
+train_x$Remodeled <- as.integer(train_x$YearRemodAdd > train_x$YearBuilt)
+train_x$OverallGrade <- train_x$OverallQual * train_x$OverallCond
+
+test_x$TotalArea <- test_x$X1stFlrSF + test_x$X2ndFlrSF + test_x$TotalBsmtSF
+test_x$Age <- test_x$YrSold - test_x$YearBuilt
+test_x$TotalBathrooms <- test_x$BsmtFullBath + (0.5 * test_x$BsmtHalfBath) + test_x$FullBath + (0.5 * test_x$HalfBath)
+test_x$Remodeled <- as.integer(test_x$YearRemodAdd > test_x$YearBuilt)
+test_x$OverallGrade <- test_x$OverallQual * test_x$OverallCond
+```
+
+```{r}
+set.seed(1)
+
+train_x<- data.matrix(train_x)
+
+train_y<- data.matrix(train_y)
+
+test_x<- data.matrix(test_x)
+
+test_y<- data.matrix(test_y)
+```
+
+#ridge model
+```{r}
+set.seed(1)
+ridge.train<-cv.glmnet(x = train_x,
+                       y = train_y,
+                       alpha=0)
+
+best.lambda<- ridge.train$lambda.min
+#best.lambda
+best.fit <- ridge.train$glmnet.fit
+#summary(best.fit)
+#best.fit
+#coef(best.fit)
+
+ridge.train.best <- glmnet(x = train_x,
+                       y = train_y,
+                       alpha=0,
+                       lambda=best.lambda)
+
+coef(ridge.train.best)
+
+train.pred <- predict(ridge.train.best, s=best.lambda, newx=train_x)
+ridge.pred <- predict(ridge.train.best, s=best.lambda, newx=test_x)
+
+cleaned_test_s1 <- cbind(test_x,ridge.pred)
+cleaned_test_s1 <- as.data.frame((cleaned_test_s1))
+colnames(cleaned_test_s1)[colnames(cleaned_test_s1) == "s1"] ="ridge_pred"
+head(cleaned_test_s1)
+
+sqrt(mean((test_y - ridge.pred)^2, na.rm=TRUE))
+
+#R-squared for train data
+cor.test(train.pred, train_y)$estimate^2
+
+cor.test(ridge.pred, test_y)$estimate^2
+```
+
+#lasso model
+```{r}
+set.seed(1)
+lasso.train.cv<-cv.glmnet(x = train_x,
+                       y = train_y,
+                       alpha=1)
+
+best.lambda.lasso<- lasso.train.cv$lambda.min
+#best.lambda.lasso
+best.fit.lasso <- lasso.train.cv$glmnet.fit
+#summary(best.fit.lasso)
+#best.fit.lasso
+#coef(best.fit.lasso)
+lasso.train.best <- glmnet(x = train_x,
+                       y = train_y,
+                       alpha=1,
+                       lambda=best.lambda.lasso,
+                       path=TRUE)
+
+coef(lasso.train.best)
+
+train.pred <- predict(lasso.train.best, s=best.lambda.lasso, newx=train_x)
+lasso.pred <- predict(lasso.train.best, s=best.lambda.lasso, newx=test_x)
+
+cleaned_test_s2 <- cbind(test_x,lasso.pred)
+cleaned_test_s2 <- as.data.frame((cleaned_test_s2)) 
+colnames(cleaned_test_s2)[colnames(cleaned_test_s2) == "s1"] ="lasso_pred"
+head(cleaned_test_s2)
+
+sqrt(mean((test_y - lasso.pred)^2, na.rm=TRUE))
+
+#R-squared for train data
+cor.test(train.pred, train_y)$estimate^2
+
+cor.test(lasso.pred, test_y)$estimate^2
+```
+
+#ridge
+```{r}
+#plot
+plot(ridge.train)
+
+ridge_coefs<-data.frame(predictor=ridge.train.best$beta@Dimnames[[1]],coef=ridge.train.best$beta@x)
+
+ggplot(ridge_coefs)+
+geom_col(aes(x=predictor,y=coef),fill='blue')+
+geom_hline(yintercept=0)+
+theme(axis.text.x=element_text(angle=45,hjust=1,face='bold',size=5))+
+labs(y='Coefficient Value',title='Ridge Regression Coefficients')
+```
+
+#lasso
+```{r}
+#plot
+plot(lasso.train.cv)
+
+lasso_coefs<-coef(lasso.train.best)
+lasso_coef_names<-lasso_coefs@Dimnames[[1]]
+lasso_coef_vals<-vector(length=length(lasso_coef_names))
+lasso_coef_vals[lasso_coefs@i +1]<-lasso_coefs@x
+lasso_coefs_df<-data.frame(predictor=lasso_coef_names,coef=lasso_coef_vals)
+lasso_coefs_df<-subset(lasso_coefs_df, !coef==0)
+
+ggplot(lasso_coefs_df)+
+geom_col(aes(x=predictor,y=coef),fill='red')+
+theme(axis.text.x=element_text(angle=45,hjust=1,face='bold',size=8))+
+labs(y='Coefficient Value',title='Lasso Regression Coefficients')
+```
+
